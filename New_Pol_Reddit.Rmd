@@ -1,0 +1,428 @@
+---
+title: "NLP Project"
+author: "Ndubuisi"
+date: "2023-02-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+```{r }
+install.packages('sparklyr')
+library(readr)
+library(sparklyr)
+library('tidyverse')
+library('rvest')
+library('lubridate')
+library('dplyr')
+library('ggplot2')
+library('tidytext')
+library('stringr')
+library(tm)
+library(stringr)
+library(igraph)
+library(ggraph)
+library(widyr)
+library(janeaustenr)
+```
+
+##SCRAPPING DATA FROM REDDIT POLITICS PAGE
+
+
+
+```{r }
+#Get post title
+reddit_page<- read_html("https://www.reddit.com/r/politics/comments/10wgssm/discussion_thread_2023_state_of_the_union/")
+reddit_page %>% 
+  html_node("._eYtD2XCVieq6emjKBH3m")%>%
+  html_text()
+```
+```{r}
+#Get post comments
+reddit_page %>%
+  html_nodes("._1qeIAgB0cPwnLhDF9XSiJM") %>% 
+  html_text()
+```
+
+
+```{r}
+#Reddit Politics New posts webpage
+reddit_pol_new <- read_html("https://www.reddit.com/r/politics/new/")
+```
+
+
+```{r}
+#Get time of comments
+time <- reddit_pol_new %>% 
+  html_nodes("._2VF2J19pUIMSLJFky-7PEI") %>% 
+  html_text()
+time
+```
+```{r}
+#Get URL of new posts
+url<- reddit_pol_new  %>% 
+  html_nodes("a.SQnoC3ObvgnGjWt90zD9Z._2INHSNB8V5eaWp4P0rY_mE") %>% 
+  html_attr("href")
+url <- paste0("https://reddit.com",url)
+url
+```
+```{r}
+#create a dataframe
+reddit_pol_newdata <- data.frame(NewsPage=url, PublishedTime=time)
+#Check the dimensions 
+dim(reddit_pol_newdata )
+```
+```{r}
+# Filter dataframe by rows that contain a time published in minutes (i.e. within the hour)
+reddit_pol_newdata2 <- reddit_pol_newdata[grep("minutes|now", reddit_pol_newdata$PublishedTime),]
+#Check the dimensions 
+dim(reddit_pol_newdata2)
+```
+```{r}
+#create empty lists for titles and comments
+titles <- c()
+comments <- c()
+```
+
+
+```{r}
+# use a for loop to run through each page and gather post title and comments
+for(i in reddit_pol_newdata2$NewsPage){ 
+  
+  reddit_pol_newdata2 <- read_html(i)
+  body <- reddit_pol_newdata2 %>%
+    html_nodes("._1qeIAgB0cPwnLhDF9XSiJM") %>%
+    html_text()
+  comments = append(comments, body)
+  
+  reddit_pol_newdata2 <- read_html(i)
+  pname <- reddit_pol_newdata2 %>%
+    html_node("._eYtD2XCVieq6emjKBH3m") %>%
+    html_text()
+  titles = append(titles, rep(pname,each=length(body)))
+  
+}
+```
+
+```{r}
+#create a dataframe
+reddit_pol_dataframe <- data.frame(Headline=titles, Comments=comments)
+dim(reddit_pol_dataframe)
+
+reddit_pol_dataframe  
+```
+```{r}
+#remove bot messages from the comments
+bot <- c(
+  "As a reminder, this subreddit is for civil discussion.",
+  "In general, be courteous to others. Debate/discuss/argue the merits of ideas, don't attack people. Personal insults, shill or troll accusations, hate speech, any suggestion or support of harm, violence, or death, and other rule violations can result in a permanent ban.",
+  "If you see comments in violation of our rules, please report them.",
+  "For those who have questions regarding any media outlets being posted on this subreddit, please click here to review our details as to our approved domains list and outlet criteria.",
+  "I am a bot, and this action was performed automatically. Please contact the moderators of this subreddit if you have any questions or concerns.",
+  "Special announcement:",
+  "r/politics is currently accepting new moderator applications.  If you want to help make this community a better place, consider applying here today!",
+  "Free version on yahoo; https://www.yahoo.com/news/florida-parents-push-government-intrusion-000143380.html"
+)
+```
+
+```{r}
+reddit_pol_dataframe_no_bot <- subset(
+  reddit_pol_dataframe, !(Comments %in% c(bot))
+)
+
+dim(reddit_pol_dataframe_no_bot)
+head(reddit_pol_dataframe_no_bot$Comments)
+```
+```{r}
+#save dataframe in csv
+write.table(reddit_pol_dataframe_no_bot,file = 'reddit_pol_data.csv', append = TRUE, sep = ",", col.names = FALSE, row.names = FALSE)
+```
+
+# WORD COUNT
+```{r}
+# read dataframe from csv file and convert to table
+bp_data<- read.csv(file='reddit_pol_data.csv', stringsAsFactors=FALSE)
+
+cleaned.bp <- as_tibble(bp_data)
+```
+
+```{r}
+#remove white spaces and unnest comments
+cleaned.bp$Comments <- stripWhitespace(cleaned.bp$Comments)
+cleaned.bp <- cleaned.bp %>%
+  unnest_tokens(word, Comments)
+```
+
+```{r}
+#remove stop words
+cleaned.bp %>%
+  count(word, sort = TRUE)
+
+data(stop_words)
+cleaned.bp <- cleaned.bp %>%
+  anti_join(stop_words)
+```
+
+
+```{r}
+#remove numbers and unique characters
+cleaned.bp %>%
+  count(word, sort = TRUE)
+nums <- cleaned.bp %>% filter(str_detect(word, "^[0-9]")) %>% select(word) %>% unique()
+cleaned.bp <- cleaned.bp %>%
+  anti_join(nums, by = "word")
+```
+```{r}
+#remove  words with contextual or semantic meaning
+
+uni_sw <- data.frame(word = c("lol","it's","i'm","subreddit", "moderators", "article","news", "fuck", "laptop","2019","twitter","time","day", "it's", "shit", "201c", "201d"))
+
+cleaned.bp <- cleaned.bp %>%
+  anti_join(uni_sw, by = "word")
+```
+
+```{r}
+#plot a graph with words that appear over 15 times
+
+cleaned.bp %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 15) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+#SENTIMENT ANALYSIS
+
+```{r}
+library(sentimentr)
+```
+
+```{r}
+#check for the sentiment score of words contained in the comments
+bp_data$Comments <-as.character(bp_data$Comments)
+sentiment_scores <- sentiment(bp_data$Comments)
+head(sentiment_scores)
+```
+```{r}
+average_sentiment_score <- sum(sentiment_scores$sentiment)/length(sentiment_scores$sentiment)
+average_sentiment_score
+#The Average sentiment is -0.0278399 that means that the reaction of reddit users 24hours after president Biden's state of union address were negative.
+```
+
+# CORELATION ANALYSIS
+
+```{r}
+library(tm)
+```
+
+```{r}
+# remove carrige returns and new lines from text
+cleaned.bp2<- as_tibble(bp_data)
+cleaned.bp2$Comments <- gsub("\r?\n|\r", " ", cleaned.bp2$Comments)
+```
+
+```{r}
+# remove punctuation
+cleaned.bp2$Comments <- gsub("[[:punct:]]", "", cleaned.bp2$Comments)
+```
+
+
+```{r}
+# force entire corpus to lowercase
+cleaned.bp2$Comments <- tolower(cleaned.bp2$Comments)
+
+```
+
+```{r}
+#remove numbers from text
+cleaned.bp2$Comments<- removeNumbers(cleaned.bp2$Comments)
+```
+
+```{r}
+# remove stop words
+cleaned.bp2$Comments <- removeWords(cleaned.bp2$Comments, stopwords("SMART"))
+```
+
+```{r}
+# remove additional words
+other.words <- c("lol","it's","i'm","subreddit", "moderators", "article","news", "fuck", "laptop","2019","twitter","time","day", "it's", "shit", "201c", "201d")
+cleaned.bp2$Comments <- removeWords(cleaned.bp2$Comments, other.words)
+```
+
+```{r}
+# removes additional remaining whitespace
+cleaned.bp2$Comments <- stripWhitespace(cleaned.bp2$Comments)
+```
+
+```{r}
+# transform table into one-word-per-line tidytext format
+clean.data <- cleaned.bp2 %>%
+  unnest_tokens(word, Comments)
+```
+
+```{r}
+# most frequent words across corpus
+clean.data <- clean.data %>%
+  count(word, sort = TRUE)
+clean.data
+```
+```{r}
+# preprocessing for tf-idf 
+posts.words <- cleaned.bp2 %>%
+  unnest_tokens(word, Comments) %>%
+  count(Headline, word, sort = TRUE)
+total.words <- posts.words %>%
+  group_by(Headline) %>%
+  summarize(total = sum(n))
+
+posts.words<- left_join(posts.words, total.words)
+```
+```{r}
+# tf-idf 
+posts.words <- posts.words %>%
+  bind_tf_idf(word, Headline, n)
+
+posts.words <- posts.words %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+```
+
+```{r}
+# compare tf-idf to gross frequency
+unique(posts.words$word[1:30])
+clean.data$word[1:30]
+```
+```{r}
+posts.bigrams <- cleaned.bp2 %>%
+  unnest_tokens(bigram, Comments, token = "ngrams", n = 2)
+```
+
+```{r}
+posts.bigrams %>%
+  count(bigram, sort = TRUE)
+```
+```{r}
+bigrams.separated <- posts.bigrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+```
+
+```{r}
+bigram.tf.idf <- posts.bigrams %>%
+  count(Headline, bigram) %>%
+  bind_tf_idf(bigram, Headline, n) %>%
+  arrange(desc(tf_idf))
+```
+
+```{r}
+# explore
+clean.data$word[1:30]
+unique(posts.words$word[1:30])
+bigram.tf.idf$bigram[1:30]
+```
+```{r}
+count_bigrams <- function(dataset) {
+  dataset %>%
+    unnest_tokens(bigram, Comments, token = "ngrams", n = 2) %>%
+    separate(bigram, c("word1", "word2"), sep = " ") %>%
+    filter(!word1 %in% stop_words$word,
+           !word2 %in% stop_words$word) %>%
+    count(word1, word2, sort = TRUE)
+}
+```
+
+```{r}
+  visualize_bigrams <- function(bigrams) {
+  set.seed(2016)
+  a <- grid::arrow(type = "closed", length = unit(.10, "inches"))
+  
+  bigrams %>%
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(aes(edge_alpha = n), show.legend = FALSE, arrow = a) +
+    geom_node_point(color = "lightblue", size = 4) +
+    geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+    theme_void()
+}
+```
+
+```{r}
+viz.bigrams <- cleaned.bp2 %>%
+  count_bigrams()
+```
+
+```{r}
+# filter out rare combinations, as well as digits and produce graph
+viz.bigrams %>%
+  filter(n > 5,
+         !str_detect(word1, "\\d"),
+         !str_detect(word2, "\\d")) %>%
+  visualize_bigrams()
+```
+```{r}
+# count words co-occuring within Posts
+clean.data2 <- cleaned.bp2 %>%
+  unnest_tokens(word, Comments)
+
+word_cors <- clean.data2 %>%
+  group_by(word) %>%
+  filter(n() >= 5) %>%
+  pairwise_cor(word, Headline, sort = TRUE)
+```
+
+```{r}
+# explore top word correlations
+word_cors
+```
+```{r}
+# explore specific word correlations
+# try a couple different words for fun
+word_cors %>%
+  filter(item1 == "hunter")
+```
+```{r}
+# produce graph comparing 6 words of importance to their most correlated words
+word_cors %>%
+  filter(item1 %in% c("evidence", "crimes", "supporter", "trump","medicare", "security")) %>%
+  group_by(item1) %>%
+  top_n(6) %>%
+  ungroup() %>%
+  mutate(item2 = reorder(item2, correlation)) %>%
+  ggplot(aes(item2, correlation)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ item1, scales = "free") +
+  coord_flip()
+```
+```{r}
+# create a graph showing relationship clusters using pairwise correlation scores
+set.seed(2016)
+```
+
+```{r}
+word_cors %>%
+  # you may need to change .50 to something lower or higher, depending on the top correlating scores
+  filter(correlation > 0.75) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_void()
+```
+
+
+
+
+
+
+
+
+
+
+
